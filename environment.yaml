@@ -1,0 +1,23 @@
+name: activity_aware
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.9.1
+      - torchvision==0.24.1
+      - transformers==4.30.2
+      - scikit-learn==1.7.2
+      - pandas==2.3.3
+      - numpy==1.26.4
+      - matplotlib==3.10.8
+      - pillow==12.1.0
+      - tqdm==4.67.1
+      - scipy==1.15.3
+      - opencv-python==4.11.0.86
+      - ftfy==6.3.1
+      - regex
+      # SurgVLP prompt/image encoders (optional; only for --prompt_encoder surgvlp)
+      - mmengine==0.7.0
+      # baselines (optional): SEDMamba additionally needs mamba-ssm; see baselines/SEDMamba/README.md

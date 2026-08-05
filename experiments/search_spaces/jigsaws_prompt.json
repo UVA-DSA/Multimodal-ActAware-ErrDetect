@@ -1,0 +1,33 @@
+{
+  "_comment": "Search space for Activity Prompting (Img+Txt) on JIGSAWS. Fixed block pins the paper protocol (5 Hz data, 20-sample windows with 10-sample steps, weighted-BCE-style class handling) and the validation protocol; the search block covers optimizer, regularization, and the minor architectural variants.",
+  "fixed": {
+    "--model": "resnet50",
+    "--prompt_type": "gesture_error",
+    "--frame_subsample": 2,
+    "--segment_length": 20,
+    "--train_step_size": 10,
+    "--test_step_size": 10,
+    "--val_ratio": 0.2,
+    "--split_seed": 0,
+    "--num_epochs": 30,
+    "--patience": 10,
+    "--position": 1
+  },
+  "search": {
+    "--learning_rate": {"type": "loguniform", "low": 3e-5, "high": 2e-3},
+    "--weight_decay": {"type": "loguniform", "low": 1e-6, "high": 3e-2},
+    "--dropout": {"type": "choice", "values": [0.1, 0.3, 0.5]},
+    "--batch_size": {"type": "choice", "values": [32, 64, 128]},
+    "--num_heads": {"type": "choice", "values": [1, 2, 4]},
+    "--use_pos_weight": {"type": "choice", "values": [0, 1]},
+    "--use_pooled_branch": {"type": "choice", "values": [0, 1]},
+    "--max_grad_norm": {"type": "choice", "values": [0.5, 1.0]},
+    "--window_label_rule": {"type": "choice", "values": ["majority", "any_error"]},
+    "--attn_temperature": {"type": "choice", "values": [0.5, 0.7, 1.0]},
+    "--fusion": {"type": "choice", "values": ["concat", "gated", "film"]},
+    "--pooled_mode": {"type": "choice", "values": ["tcn", "mean", "attn"]},
+    "--loss": {"type": "choice", "values": ["wbce", "focal"]},
+    "--focal_gamma": {"type": "choice", "values": [1.0, 2.0, 3.0]},
+    "--label_smoothing": {"type": "choice", "values": [0.0, 0.05, 0.1]}
+  }
+}

@@ -1,0 +1,27 @@
+# Datasets, extracted features and run outputs are never committed
+data/
+outputs/
+results/
+exp_log/
+exp_log_*/
+
+# Model artifacts
+*.pth
+*.pt
+*.ckpt
+*.npy
+*.pkl
+weight/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+
+# Logs and scratch
+*.log
+.DS_Store

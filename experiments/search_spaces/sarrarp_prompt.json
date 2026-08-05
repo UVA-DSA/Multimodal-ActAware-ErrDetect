@@ -1,0 +1,35 @@
+{
+  "_comment": "Search space for Activity Prompting (Img+Txt) on SAR-RARP50 (features are already 5 Hz on disk). decision_threshold 0.0 means the threshold is tuned on the validation split each epoch; 0.5 is the fixed paper-style threshold.",
+  "fixed": {
+    "--feature_source": "embed",
+    "--prompt_encoder": "clip",
+    "--prompt_type": "lowlevel_gesture_error",
+    "--segment_length": 20,
+    "--train_step_size": 10,
+    "--test_step_size": 10,
+    "--val_ratio": 0.2,
+    "--split_seed": 0,
+    "--num_epochs": 30,
+    "--patience": 10,
+    "--position": 1,
+    "--output_mode": "segment",
+    "--num_workers": 4
+  },
+  "search": {
+    "--learning_rate": {"type": "loguniform", "low": 3e-5, "high": 2e-3},
+    "--weight_decay": {"type": "loguniform", "low": 1e-6, "high": 3e-2},
+    "--dropout": {"type": "choice", "values": [0.1, 0.3, 0.5]},
+    "--batch_size": {"type": "choice", "values": [32, 64, 128]},
+    "--num_heads": {"type": "choice", "values": [1, 2, 4]},
+    "--use_pos_weight": {"type": "choice", "values": [0, 1]},
+    "--disable_pooled": {"type": "choice", "values": [0, 1]},
+    "--max_grad_norm": {"type": "choice", "values": [0.5, 1.0]},
+    "--attn_temperature": {"type": "choice", "values": [0.5, 0.7, 1.0]},
+    "--fusion": {"type": "choice", "values": ["concat", "gated", "film"]},
+    "--pooled_mode": {"type": "choice", "values": ["mean", "tcn", "attn"]},
+    "--decision_threshold": {"type": "choice", "values": [0.0, 0.5]},
+    "--loss": {"type": "choice", "values": ["wbce", "focal"]},
+    "--focal_gamma": {"type": "choice", "values": [1.0, 2.0, 3.0]},
+    "--label_smoothing": {"type": "choice", "values": [0.0, 0.05, 0.1]}
+  }
+}
