@@ -9,6 +9,8 @@
 Official implementation of *Real-Time Multimodal Activity-Aware Error Detection in
 Robot-Assisted Surgery*.
 
+[📄 Paper](https://arxiv.org/abs/2606.23593) · [📑 Supplementary Materials](assets/supplementary_materials.pdf)
+
 </div>
 
 ---
@@ -280,6 +282,24 @@ training or inference.
 <em>Example output on a SAR-RARP50 test video. Ground-truth and predicted error segments are
 shown in red, with the model's prediction probability plotted below.</em>
 </div>
+
+## Supplementary materials
+
+Additional details are provided in
+[`assets/supplementary_materials.pdf`](assets/supplementary_materials.pdf):
+
+| Appendix | Contents |
+|---|---|
+| A | Mapping from surgical context states to instrument–object interaction triplets, and how the interaction prompts and pretraining labels are derived |
+| B | The complete set of textual prompts for every prompt type, on both JIGSAWS and SAR-RARP50 |
+| C | Vision encoder ablation — alternative general-domain encoders against ResNet50 |
+| D | Dataset distributions — window counts and error/nominal ratios per split |
+| E | Cross-validation results, including the Leave-One-User-Out (LOUO) protocol |
+| F | Full complexity profile — parameters, FLOPs, streaming and end-to-end latency for all configurations and baselines |
+
+Appendix B is the authoritative reference for the prompt sets implemented in
+`jigsaws/textprompts.py` and `SAR_RARP/textprompt.py`; Appendix A documents the
+context-state to triplet mapping those interaction prompts are built from.
 
 ## Citation
 
