@@ -101,7 +101,9 @@ Img: image data, Txt: textual prompts, Kin: kinematics, Label: gesture or intera
 ├── experiments/             # search spaces and the sweep driver
 ├── tools/                   # log summarizers, dataset inspection, latency profiling
 ├── docs/                    # data preparation guide
-└── data/                    # datasets and pre-extracted features (not shipped)
+└── data/
+    └── SAR_RARP50/context_labels/   # SAR-RARP50 context-state labels (included)
+                                     # remaining datasets and features are not shipped
 ```
 
 ## Installation
@@ -119,10 +121,33 @@ pip install -r requirements.txt
 
 ## Data
 
-The `data/` directory is **not** distributed. See [docs/DATA.md](docs/DATA.md) for how to
-obtain JIGSAWS (with executional error annotations) and SAR-RARP50 (with error annotations
-from SEDMamba), the exact directory layout expected by the loaders, and the
-feature-extraction commands.
+Datasets are **not** distributed. See [docs/DATA.md](docs/DATA.md) for how to obtain
+JIGSAWS (with executional error annotations) and SAR-RARP50 (with error annotations from
+SEDMamba), the exact directory layout expected by the loaders, and the feature-extraction
+commands.
+
+**Included:** [`data/SAR_RARP50/context_labels/`](data/SAR_RARP50/context_labels) provides
+the SAR-RARP50 **context-state labels** released with this work. SAR-RARP50 ships no
+instrument–object interaction annotations, so these were derived from the challenge's
+segmentation masks using the rule-based context detection described in the paper
+(Sec. IV-A), following the [COMPASS](https://arxiv.org/abs/2209.06424) context-state
+definitions. They are the source for the interaction prompts in `SAR_RARP/textprompt.py`
+and for the interaction labels used to pretrain the activity-aware visual encoders.
+
+Each file is a 1 Hz CSV (`time` is a frame index in the original 60 fps video) with the
+five context-state variables — objects held by and contacted by each grasper, plus the
+needle state:
+
+```csv
+time,state_1,state_2,state_3,state_4,state_5
+0,0,0,3,0,0
+60,0,0,3,0,0
+```
+
+Full column semantics and value coding are documented in
+[docs/DATA.md](docs/DATA.md#context-state-labels-included-in-this-repository); the
+context-state → interaction-triplet mapping is Appendix A of the
+[supplementary materials](assets/supplementary_materials.pdf).
 
 Once raw data is in place:
 

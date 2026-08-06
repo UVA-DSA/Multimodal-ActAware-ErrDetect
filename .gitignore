@@ -1,5 +1,11 @@
-# Datasets, extracted features and run outputs are never committed
-data/
+# Datasets, extracted features and run outputs are never committed.
+# Git cannot re-include paths under an excluded directory, so each level is
+# unwound explicitly to keep the SAR-RARP50 context-state labels tracked.
+data/*
+!data/SAR_RARP50/
+data/SAR_RARP50/*
+!data/SAR_RARP50/context_labels/
+
 outputs/
 results/
 exp_log/

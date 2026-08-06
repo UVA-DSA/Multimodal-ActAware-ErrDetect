@@ -93,5 +93,46 @@ python SAR_RARP/extract_features_sar_rarp50.py --model clip-vit-base-patch16   #
 python SAR_RARP/extract_surgvlp_features_sar_rarp50.py     # optional, SurgVLP
 ```
 
-Context-state labels for interaction prompts were derived from the challenge's
-segmentation masks with the rule-based method described in the paper (Sec. IV-A).
+### Context-state labels (included in this repository)
+
+Unlike the rest of `data/`, the SAR-RARP50 context-state labels **are** shipped here:
+
+```
+data/SAR_RARP50/context_labels/video_XX.txt
+```
+
+They were derived from the challenge's segmentation masks with the rule-based context
+detection method described in the paper (Sec. IV-A), following the context-state
+definitions of [COMPASS](https://arxiv.org/abs/2209.06424). They provide the
+instrument–object interaction information that SAR-RARP50 does not ship natively, and are
+the source for both the interaction prompts (`SAR_RARP/textprompt.py`) and the interaction
+labels used to pretrain the activity-aware visual encoders
+(`SAR_RARP/context_pretrain/`).
+
+**Format.** 54 CSV files covering the 50 SAR-RARP50 videos; four videos (11, 15, 17, 29)
+are split into two parts each and stored as `video_XX_1.txt` / `video_XX_2.txt`.
+
+```csv
+time,state_1,state_2,state_3,state_4,state_5
+0,0,0,3,0,0
+60,0,0,3,0,0
+120,0,0,3,0,0
+```
+
+| Column | Meaning | Values |
+|---|---|---|
+| `time` | Frame index in the original 60 fps video. Rows are spaced 60 frames apart, i.e. **1 Hz** | 0, 60, 120, … |
+| `state_1` | Object **held by** the left grasper | 0 = nothing, 2 = needle, 3 = thread |
+| `state_2` | Object **contacted by** the left grasper | 0 = nothing, 2 = needle, 3 = thread |
+| `state_3` | Object **held by** the right grasper | 0 = nothing, 2 = needle, 3 = thread |
+| `state_4` | Object **contacted by** the right grasper | 0 = nothing, 2 = needle, 3 = thread |
+| `state_5` | Needle state | 0 = not touching, 1 = touching, 2 = in |
+
+Note the sampling-rate difference: context labels are at 1 Hz (every 60th frame), whereas
+the video frames and error annotations used for training are at 5 Hz (every 12th frame).
+Resample or forward-fill the context labels onto the 5 Hz grid before aligning them with
+frame-level features.
+
+The full mapping from context-state patterns to instrument–object interaction triplets, and
+the prompts generated from them, are given in Appendices A and B of
+[`assets/supplementary_materials.pdf`](../assets/supplementary_materials.pdf).
