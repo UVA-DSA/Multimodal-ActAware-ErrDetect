@@ -320,7 +320,8 @@ Additional details are provided in
 | C | Vision encoder ablation — alternative general-domain encoders against ResNet50 |
 | D | Dataset distributions — window counts and error/nominal ratios per split |
 | E | Cross-validation results, including the Leave-One-User-Out (LOUO) protocol |
-| F | Full complexity profile — parameters, FLOPs, streaming and end-to-end latency for all configurations and baselines |
+| F | Input sequence length ablation |
+| G | Full complexity profile — parameters, FLOPs, streaming and end-to-end latency for all configurations and baselines |
 
 Appendix B is the authoritative reference for the prompt sets implemented in
 `jigsaws/textprompts.py` and `SAR_RARP/textprompt.py`; Appendix A documents the
@@ -342,5 +343,5 @@ context-state to triplet mapping those interaction prompts are built from.
 - [Chain-of-Gesture (CoG)](https://arxiv.org/abs/2406.19217) — baseline implementation under `baselines/Chain-of-Gesture`.
 - [SEDMamba](https://github.com/wzjialang/SEDMamba) — baseline implementation and SAR-RARP50 error annotations under `baselines/SEDMamba`.
 - [SurgVLP](https://github.com/CAMMA-public/SurgVLP) — surgical vision-language encoder under `SurgVLP/`.
-- [JIGSAWS](https://cirl.lcsr.jhu.edu/research/hmm/datasets/jigsaws_release/) executional error labels from [Hutchinson et al.](https://doi.org/10.1016/j.bja.2021.10.045); context-state labels from [COMPASS](https://arxiv.org/abs/2209.06424).
+- [JIGSAWS](https://cirl.lcsr.jhu.edu/research/hmm/datasets/jigsaws_release/) executional error labels from [Hutchinson et al.](https://doi.org/10.1002/rcs.2375); context-state labels from [COMPASS](https://arxiv.org/abs/2209.06424).
 - [SAR-RARP50](https://rdr.ucl.ac.uk/articles/dataset/SAR-RARP50_train_set/24932529) surgical dataset.
