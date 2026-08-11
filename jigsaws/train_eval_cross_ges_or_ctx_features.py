@@ -46,6 +46,15 @@ def _infer_gesture_dim(gesture_root: str, task: str) -> int:
     raise FileNotFoundError(f"Could not infer gesture feature dim from {gesture_root}/{task}/*/features.pt")
 
 
+def _selection_score(f1, bal_acc, metric):
+    """Epoch-selection score; see --selection_metric."""
+    if metric == "f1":
+        return f1
+    if metric == "bacc":
+        return bal_acc
+    return 0.5 * (f1 + bal_acc)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train cross model using precomputed base+gesture features")
     parser.add_argument("--base_model", type=str, default="resnet50", choices=list(MODEL_FEATURE_DIMS.keys()))
@@ -65,6 +74,20 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--segment_length", type=int, default=40, help="Window length for sliding segments")
     parser.add_argument("--step_size", type=int, default=6, help="Step size for sliding windows")
+    parser.add_argument("--frame_subsample", type=int, default=2,
+                        help="Keep every k-th stored frame. Stored JIGSAWS frames are 10 Hz; 2 gives 5 Hz.")
+    parser.add_argument("--val_ratio", type=float, default=0.2,
+                        help="Fraction of training videos (per task) held out for validation. The epoch is "
+                             "selected on this split and the test split stays reporting-only. Setting this "
+                             "to 0 selects the epoch on the test split, which leaks test information into "
+                             "model selection and makes the reported numbers optimistic; it is provided "
+                             "only to reproduce the original behaviour and should not be used for results.")
+    parser.add_argument("--split_seed", type=int, default=0,
+                        help="Seed controlling the train/validation video split only.")
+    parser.add_argument("--selection_metric", type=str, default="f1_bacc", choices=["f1", "f1_bacc", "bacc"],
+                        help="Score used to pick the best epoch. f1_bacc (mean of F1 and balanced accuracy) "
+                             "matches the rest of the repository and is not gameable by an always-error predictor.")
+    parser.add_argument("--log_tag", type=str, default="", help="Tag appended to log/checkpoint filenames.")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed. Unset leaves RNGs unseeded.")
     parser.add_argument("--split_scheme", type=str, default="loso", choices=["loso", "louo"])
     parser.add_argument("--split_root", type=str, default=None,
@@ -107,9 +130,10 @@ def main():
 
     log_dir = "./outputs/jigsaws/logs"
     os.makedirs(log_dir, exist_ok=True)
+    tag_suffix = f"_{args.log_tag}" if args.log_tag else ""
     csv_path = os.path.join(
         log_dir,
-        f"training_crosscontext_{args.base_model}_{args.split_scheme}_gesdim{ges_dim}_lr_{args.learning_rate}.csv",
+        f"training_crosscontext_{args.base_model}_{args.split_scheme}_gesdim{ges_dim}_lr_{args.learning_rate}{tag_suffix}.csv",
     )
     all_fold_logs = []
 
@@ -130,18 +154,38 @@ def main():
         def _build_sets(task: str, records):
             sets = []
             for fn in records:
-                ds = JIGSAWS_Gesture_DualFeatures(fn if fn.endswith(".csv") else f"{fn}.csv", task, paths)
+                ds = JIGSAWS_Gesture_DualFeatures(fn if fn.endswith(".csv") else f"{fn}.csv", task, paths,
+                                                  frame_subsample=args.frame_subsample)
                 ds = JIGSAWS_DualFeatures_SegmentWrapper(
                     ds, segment_length=args.segment_length, step_size=args.step_size
                 )
                 sets.append(ds)
             return sets
 
-        train_sets = _build_sets("Suturing", split_s["train"]) + _build_sets("Needle_Passing", split_n["train"])
+        def _split_train_val(records):
+            """Hold out a fraction of the training videos (at least one stays in train)."""
+            if args.val_ratio <= 0 or len(records) < 2:
+                return list(records), []
+            shuffled = list(records)
+            random.Random(args.split_seed).shuffle(shuffled)
+            n_val = min(len(shuffled) - 1, max(1, int(round(len(shuffled) * args.val_ratio))))
+            return shuffled[n_val:], shuffled[:n_val]
+
+        tr_s, va_s = _split_train_val(split_s["train"])
+        tr_n, va_n = _split_train_val(split_n["train"])
+
+        train_sets = _build_sets("Suturing", tr_s) + _build_sets("Needle_Passing", tr_n)
+        val_sets = _build_sets("Suturing", va_s) + _build_sets("Needle_Passing", va_n)
         test_sets = _build_sets("Suturing", split_s["test"]) + _build_sets("Needle_Passing", split_n["test"])
+        use_validation = len(val_sets) > 0
 
         train_loader = DataLoader(ConcatDataset(train_sets), batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_dual_features_context)
+        val_loader = (DataLoader(ConcatDataset(val_sets), batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn_dual_features_context)
+                      if use_validation else None)
         test_loader = DataLoader(ConcatDataset(test_sets), batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn_dual_features_context)
+        print(f"[INFO] fold {fold}: train={len(train_loader.dataset)} "
+              f"val={len(val_loader.dataset) if use_validation else 0} test={len(test_loader.dataset)} "
+              f"(selection on {'val' if use_validation else 'test'} {args.selection_metric})")
 
         model = GVRModuleContexPredDualFeatures(
             base_dim=base_dim,
@@ -166,7 +210,8 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
         scheduler = None
 
-        best_test_f1 = 0.0
+        best_score = -float("inf")
+        best_test_metrics = None
         best_state = None
         epochs_wo = 0
 
@@ -180,6 +225,9 @@ def main():
             "train_f1": [],
             "train_acc": [],
             "train_jaccard": [],
+            "val_f1": [],
+            "val_accuracy": [],
+            "val_jaccard": [],
             "test_f1": [],
             "test_acc": [],
             "test_jaccard": [],
@@ -205,6 +253,13 @@ def main():
                 max_grad_norm=args.max_grad_norm,
                 window_label_rule=args.window_label_rule,
             )
+            if use_validation:
+                val_f1, val_acc, val_j = test_context_dual_features(
+                    model, val_loader, device, debug=False, criterion=criterion,
+                    window_label_rule=args.window_label_rule,
+                )
+            else:
+                val_f1, val_acc, val_j = float("nan"), float("nan"), float("nan")
             test_f1, test_acc, test_j = test_context_dual_features(
                 model,
                 test_loader,
@@ -223,15 +278,23 @@ def main():
             fold_log["train_f1"].append(train_f1)
             fold_log["train_acc"].append(train_acc)
             fold_log["train_jaccard"].append(train_j)
+            fold_log["val_f1"].append(val_f1)
+            fold_log["val_accuracy"].append(val_acc)
+            fold_log["val_jaccard"].append(val_j)
             fold_log["test_f1"].append(test_f1)
             fold_log["test_acc"].append(test_acc)
             fold_log["test_jaccard"].append(test_j)
 
-            if test_f1 > best_test_f1:
-                best_test_f1 = test_f1
+            score = (_selection_score(val_f1, val_acc, args.selection_metric) if use_validation
+                     else _selection_score(test_f1, test_acc, args.selection_metric))
+            if score > best_score:
+                best_score = score
+                best_test_metrics = (test_f1, test_acc, test_j)
                 best_state = copy.deepcopy(model.state_dict())
                 epochs_wo = 0
-                print(f"  *** New best test_f1={best_test_f1:.4f} ***")
+                split_name = "val" if use_validation else "test"
+                print(f"  *** New best {split_name} {args.selection_metric}={best_score:.4f} "
+                      f"(test_f1={test_f1:.4f}) ***")
             else:
                 epochs_wo += 1
                 print(f"  No test improvement for {epochs_wo} epoch(s)")
@@ -256,7 +319,9 @@ def main():
                 "base_dim": base_dim,
                 "gesture_feature_root": args.gesture_feature_root,
                 "gesture_dim": ges_dim,
-                "best_test_f1": best_test_f1,
+                "selection_metric": args.selection_metric,
+                "best_selection_score": best_score,
+                "test_f1_at_selected_epoch": (best_test_metrics[0] if best_test_metrics else float("nan")),
                 "args": vars(args),
             },
             save_path,
@@ -271,7 +336,21 @@ def main():
         print(f"[INFO] Logs saved to {csv_path}")
 
         # Summary
-        best_vals = [df["test_f1"].max() for df in all_fold_logs]
+        # Rank each fold's epochs by the same score used during training, then read out
+        # the test metrics at that epoch (never the best test epoch).
+        def _fold_selected(df):
+            f1c, accc = ("val_f1", "val_accuracy") if args.val_ratio > 0 else ("test_f1", "test_acc")
+            scores = [_selection_score(a, b, args.selection_metric) for a, b in zip(df[f1c], df[accc])]
+            i = int(np.argmax(scores))
+            return float(df["test_f1"].iloc[i]), float(df["test_acc"].iloc[i]), float(df["test_jaccard"].iloc[i])
+
+        selected = [_fold_selected(df) for df in all_fold_logs]
+        best_vals = [s[0] for s in selected]
+        print(f"  Test at {'val' if args.val_ratio > 0 else 'test'}-selected epoch "
+              f"({args.selection_metric}):  F1={np.mean([s[0] for s in selected]):.4f} "
+              f"BalAcc={np.mean([s[1] for s in selected]):.4f} "
+              f"Jaccard={np.mean([s[2] for s in selected]):.4f} "
+              f"(F1 std {np.std([s[0] for s in selected]):.4f})")
         print("\n" + "=" * 60)
         print("SUMMARY - Best TEST F1 per fold")
         for fold_df in all_fold_logs:

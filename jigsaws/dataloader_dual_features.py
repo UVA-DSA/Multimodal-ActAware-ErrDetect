@@ -37,10 +37,12 @@ class JIGSAWS_Gesture_DualFeatures(Dataset):
     where label is error1_nor0 (0/1) and gesture_id is the numeric gesture (from CSV, e.g. 1,2,3,...)
     """
 
-    def __init__(self, filename: str, task: str, paths: DualFeaturePaths):
+    def __init__(self, filename: str, task: str, paths: DualFeaturePaths, frame_subsample: int = 1):
         self.filename = filename  # with .csv
         self.task = task
         self.paths = paths
+        # Stored JIGSAWS frames are 10 Hz; 2 gives the 5 Hz rate used elsewhere.
+        self.frame_subsample = max(1, int(frame_subsample))
 
         csv_path = os.path.join(paths.data_root, task, "errors", filename)
         self.df = pd.read_csv(csv_path)
@@ -57,6 +59,13 @@ class JIGSAWS_Gesture_DualFeatures(Dataset):
         if self.base_dim is None and len(self.base_dict) > 0:
             self.base_dim = int(next(iter(self.base_dict.values())).shape[0])
         self.ges_dim = int(next(iter(self.ges_dict.values())).shape[0]) if len(self.ges_dict) > 0 else None
+
+        if self.frame_subsample > 1:
+            # Subsample on the frames the two streams share, so both stay aligned.
+            common = sorted(set(self.base_dict) & set(self.ges_dict))[:: self.frame_subsample]
+            keep = set(common)
+            self.base_dict = {k: v for k, v in self.base_dict.items() if k in keep}
+            self.ges_dict = {k: v for k, v in self.ges_dict.items() if k in keep}
         self._build_sequence()
 
     @staticmethod
