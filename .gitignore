@@ -8,6 +8,7 @@ data/SAR_RARP50/*
 
 outputs/
 results/
+profile_reports/
 exp_log/
 exp_log_*/
 

@@ -17,7 +17,7 @@ import tempfile
 import time
 import types
 from pathlib import Path
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -67,7 +67,7 @@ from torchvision import models, transforms
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CHAIN_DIR = REPO_ROOT / "baselines" / "Chain-of-Gesture"
-HF_CACHE_DIR = REPO_ROOT / "data" / ".hf_cache"
+HF_CACHE_DIR = Path(os.environ.get("HF_HOME", REPO_ROOT / "outputs" / ".hf_cache"))
 
 for _p in (REPO_ROOT, REPO_ROOT / "jigsaws", REPO_ROOT / "SAR_RARP"):
     if str(_p) not in sys.path:
@@ -253,10 +253,24 @@ def tensor_shape_to_str(tensor: torch.Tensor) -> str:
     return "x".join(str(dim) for dim in tensor.shape)
 
 
+LATENCY_STAT = "median"
+
+
 def summarize_samples(samples: Sequence[float]) -> Tuple[float, float]:
+    """Central latency estimate + spread.
+
+    Defaults to the median. On a shared GPU node a handful of iterations
+    occasionally stall (contention, CPU-side preprocessing jitter, one-time
+    allocation), and a single such sample drags the mean far off the typical
+    cost -- observed as rows whose std exceeded their mean. The median ignores
+    those spikes; for well-behaved rows it is indistinguishable from the mean.
+    The reported spread stays the standard deviation, so a large std against a
+    stable median still flags a noisy measurement.
+    """
     if not samples:
         return 0.0, 0.0
-    return float(mean(samples)), float(pstdev(samples) if len(samples) > 1 else 0.0)
+    centre = median(samples) if LATENCY_STAT == "median" else mean(samples)
+    return float(centre), float(pstdev(samples) if len(samples) > 1 else 0.0)
 
 
 def deterministic_prompt_features(num_prompts: int, dim: int, offset: int = 0) -> torch.Tensor:
@@ -489,7 +503,7 @@ def import_gvr_module():
         return sys.modules["benchmark_model_gvr_features"]
     previous_module = _install_transformers_text_shim()
     try:
-        return load_module_from_file("benchmark_model_gvr_features", REPO_ROOT / "model_gvr_features.py")
+        return load_module_from_file("benchmark_model_gvr_features", REPO_ROOT / "jigsaws" / "model_gvr_features.py")
     finally:
         _restore_transformers_module(previous_module)
 
@@ -597,7 +611,7 @@ def import_sedmamba_module(device: torch.device):
     if device.type == "cpu":
         mamba_simple.causal_conv1d_fn = None
     sys.modules["mamba_ssm"].Mamba = mamba_simple.Mamba
-    return load_module_from_file("benchmark_sedmamba_baseline", REPO_ROOT / "SEDMamba" / "baseline" / "SEDMamba.py")
+    return load_module_from_file("benchmark_sedmamba_baseline", REPO_ROOT / "baselines" / "SEDMamba" / "baseline" / "SEDMamba.py")
 
 
 def install_fake_scipy() -> None:
@@ -655,6 +669,40 @@ def import_cog_module():
         _restore_scipy_modules(previous_scipy, previous_interpolate)
     module.clip = FakeClipModule()
     return module
+
+
+def build_resnet50_backbone() -> torch.nn.Module:
+    """A frozen ResNet50 trunk (fc removed), identical to the one build_resnet50_runtime uses."""
+    weight_enum = getattr(models, "ResNet50_Weights", None)
+    weights = weight_enum.DEFAULT if weight_enum is not None else None
+    backbone = models.resnet50(weights=weights)
+    backbone.fc = torch.nn.Identity()
+    return freeze_module(backbone)
+
+
+class ActivityAwareDualStream(torch.nn.Module):
+    """Activity-aware dual-stream model that owns its activity-embedding vision encoder.
+
+    The activity-aware setup runs the *same* video frames through two vision encoders:
+    one producing generic spatial features, one producing activity-aware embeddings.
+    Only the spatial-feature encoder is the benchmark's `encoder`; the activity-embedding
+    encoder is owned here, so its parameters, FLOPs and latency are attributed to the
+    model rather than to the encoder.
+    """
+
+    def __init__(self, inner: torch.nn.Module, activity_encoder: torch.nn.Module):
+        super().__init__()
+        self.inner = inner
+        self.activity_encoder = activity_encoder
+
+    def forward(self, base_features: torch.Tensor, ges_pixels: torch.Tensor, masks=None):
+        feats = self.activity_encoder(ges_pixels)
+        if isinstance(feats, (tuple, list)):
+            feats = feats[0]
+        if feats.ndim > 2:
+            feats = feats.flatten(1)
+        ges_features = feats.to(base_features.dtype).unsqueeze(0)
+        return self.inner(base_features, ges_features, masks=masks)
 
 
 def build_resnet50_runtime(device: torch.device, chunk_size: int) -> EncoderRuntime:
@@ -874,9 +922,12 @@ def build_gvr_context_model_inputs(prepared_batch: Dict[str, Any], encoded_featu
 
 
 def build_gvr_dual_model_inputs(prepared_batch: Dict[str, Any], encoded_features: torch.Tensor, device: torch.device) -> Dict[str, Any]:
+    # The activity-embedding encoder lives inside the model, so it receives pixels, not
+    # features -- the same preprocessed frames the spatial encoder consumed.
+    pixels = torch.cat([chunk.to(device) for chunk in prepared_batch["encoder_chunks"]], dim=0)
     return {
         "base_features": encoded_features.unsqueeze(0),
-        "ges_features": prepared_batch["ges_features"].unsqueeze(0).to(device),
+        "ges_pixels": pixels,
         "masks": prepared_batch["masks"].unsqueeze(0).to(device),
     }
 
@@ -1153,6 +1204,49 @@ def build_cog_spec(*, device: torch.device, jigsaws_profile: RawImageProfile, nu
     )
 
 
+def build_cog_gvr_only_spec(*, device: torch.device, jigsaws_profile: RawImageProfile, num_batches: int) -> BenchmarkSpec:
+    """CoG with ONLY its Gestural-Visual Reasoning module (no multi-scale temporal reasoning).
+
+    Built with exactly the same args, encoder, prompts, window length and raw image
+    profile as build_cog_spec(), so the two rows differ only by the MSTR stack.
+    """
+    cog_module = import_cog_module()
+    gest_prompt_file = register_temp_file(tempfile.NamedTemporaryFile(prefix="cog_prompt_", suffix=".pt", delete=False).name)
+    args = SimpleNamespace(train=1, k=WINDOW_LENGTH, layers=10, stages=8, lambda_=0.15, dmodel=64, len_q=WINDOW_LENGTH)
+    model = cog_module.COG_GVROnly(
+        args,
+        num_f_dim=RESNET_FEATURE_DIM,
+        num_classes=2,
+        d_model=args.dmodel,
+        d_q=args.dmodel // 8,
+        len_q=args.len_q,
+        device=device,
+        gest_prompt=gest_prompt_file,
+    )
+    raw_batches = make_raw_image_batches(sequence_lengths=[WINDOW_LENGTH] * num_batches, image_profile=jigsaws_profile, seed_offset=100)
+    return BenchmarkSpec(
+        model_family="CoG-GVR",
+        model_name="COG_GVROnly",
+        prompt_type="default_gesture_list",
+        encoder_key=RESNET50_ENCODER_KEY,
+        encoder_name=RESNET50_ENCODER_NAME,
+        feature_source="resnet50",
+        benchmark_window_length=WINDOW_LENGTH,
+        sequence_profile=format_sequence_profile(raw_batches),
+        input_description=f"raw_frames=10x{jigsaws_profile.height}x{jigsaws_profile.width}x3 uint8 -> ResNet50 features=1x10x{RESNET_FEATURE_DIM}",
+        notes=(
+            f"CoG GVR module only (multi-scale temporal reasoning removed); 10-frame segment; "
+            f"raw image profile {jigsaws_profile.source}; CLIP text prompt encoder excluded from "
+            "encoder stats via synthetic prompt embeddings."
+        ),
+        model=model,
+        raw_batches=raw_batches,
+        prepare_raw_batch=prepare_image_only_batch,
+        build_model_inputs=build_cog_model_inputs,
+        forward_model=lambda _model, batch: _model(batch["features"])[0][0],
+    )
+
+
 def build_gvr_pred_specs(*, encoder_key: str, encoder_name: str, feature_dim: int, jigsaws_profile: RawImageProfile, num_batches: int) -> List[BenchmarkSpec]:
     gvr_module = import_gvr_module()
     specs: List[BenchmarkSpec] = []
@@ -1275,7 +1369,7 @@ def build_gvr_context_specs(*, encoder_key: str, encoder_name: str, feature_dim:
 
 def build_gvr_dual_spec(*, jigsaws_profile: RawImageProfile, num_batches: int) -> BenchmarkSpec:
     gvr_module = import_gvr_module()
-    model = gvr_module.GVRModuleContexPredDualFeatures(
+    inner = gvr_module.GVRModuleContexPredDualFeatures(
         base_dim=RESNET_FEATURE_DIM,
         ges_dim=RESNET_FEATURE_DIM,
         d_embed=RESNET_FEATURE_DIM,
@@ -1287,6 +1381,7 @@ def build_gvr_dual_spec(*, jigsaws_profile: RawImageProfile, num_batches: int) -
         position=True,
         dropout=0.3,
     )
+    model = ActivityAwareDualStream(inner, build_resnet50_backbone())
     raw_batches = make_raw_dual_batches(
         sequence_lengths=[WINDOW_LENGTH] * num_batches,
         image_profile=jigsaws_profile,
@@ -1299,19 +1394,20 @@ def build_gvr_dual_spec(*, jigsaws_profile: RawImageProfile, num_batches: int) -
         prompt_type="n/a",
         encoder_key=RESNET50_ENCODER_KEY,
         encoder_name=RESNET50_ENCODER_NAME,
-        feature_source="resnet50+synthetic_gesture_stream",
+        feature_source="resnet50 (spatial, encoder) + resnet50 (activity embeddings, in-model)",
         benchmark_window_length=WINDOW_LENGTH,
         sequence_profile=format_sequence_profile(raw_batches),
-        input_description=f"raw_frames=10x{jigsaws_profile.height}x{jigsaws_profile.width}x3 uint8 -> base=1x10x{RESNET_FEATURE_DIM}, ges=1x10x{RESNET_FEATURE_DIM}, masks=1x10 bool",
+        input_description=f"raw_frames=10x{jigsaws_profile.height}x{jigsaws_profile.width}x3 uint8 -> base=1x10x{RESNET_FEATURE_DIM} (encoder) + same frames -> in-model activity ResNet50 -> ges=1x10x{RESNET_FEATURE_DIM}, masks=1x10 bool",
         notes=(
-            "Dual-stream context row keeps the original paired-stream structure. "
-            "Encoder stats/latency cover the base ResNet50 stream; the gesture stream remains a synthetic paired feature input."
+            "Activity-aware dual-stream row. The spatial-feature ResNet50 is the encoder; the "
+            "second (activity-embedding) ResNet50 is owned by the model, so its params, FLOPs and "
+            "latency count towards the model, not the encoder. Both encoders consume the same frames."
         ),
         model=model,
         raw_batches=raw_batches,
         prepare_raw_batch=prepare_dual_batch,
         build_model_inputs=build_gvr_dual_model_inputs,
-        forward_model=lambda _model, batch: _model(batch["base_features"], batch["ges_features"], masks=batch["masks"]),
+        forward_model=lambda _model, batch: _model(batch["base_features"], batch["ges_pixels"], masks=batch["masks"]),
     )
 
 
@@ -1323,20 +1419,32 @@ def collect_model_specs(
     sar_rarp_profile: RawImageProfile,
     sed_sequence_lengths: Sequence[int],
     sed_sequence_note: str,
+    families: Optional[set] = None,
 ) -> List[BenchmarkSpec]:
+    # `families` filters BEFORE construction: building a spec imports that model's
+    # dependencies (SEDMamba needs mamba_ssm, which lives in a separate environment),
+    # so filtering afterwards would still fail on unrelated models.
+    def want(family: str) -> bool:
+        return families is None or family.lower() in families
+
     specs: List[BenchmarkSpec] = []
-    specs.append(build_cog_spec(device=device, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_pred_specs(encoder_key=RESNET50_ENCODER_KEY, encoder_name=RESNET50_ENCODER_NAME, feature_dim=RESNET_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_kin_specs(encoder_key=RESNET50_ENCODER_KEY, encoder_name=RESNET50_ENCODER_NAME, feature_dim=RESNET_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_context_specs(encoder_key=RESNET50_ENCODER_KEY, encoder_name=RESNET50_ENCODER_NAME, feature_dim=RESNET_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.append(build_gvr_dual_spec(jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_pred_specs(encoder_key=DINOV2_LARGE_ENCODER_KEY, encoder_name=DINOV2_LARGE_ENCODER_NAME, feature_dim=DINOV2_LARGE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_kin_specs(encoder_key=DINOV2_LARGE_ENCODER_KEY, encoder_name=DINOV2_LARGE_ENCODER_NAME, feature_dim=DINOV2_LARGE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_context_specs(encoder_key=DINOV2_LARGE_ENCODER_KEY, encoder_name=DINOV2_LARGE_ENCODER_NAME, feature_dim=DINOV2_LARGE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_pred_specs(encoder_key=CLIP_BASE_ENCODER_KEY, encoder_name=CLIP_BASE_ENCODER_NAME, feature_dim=CLIP_BASE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_kin_specs(encoder_key=CLIP_BASE_ENCODER_KEY, encoder_name=CLIP_BASE_ENCODER_NAME, feature_dim=CLIP_BASE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.extend(build_gvr_context_specs(encoder_key=CLIP_BASE_ENCODER_KEY, encoder_name=CLIP_BASE_ENCODER_NAME, feature_dim=CLIP_BASE_FEATURE_DIM, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
-    specs.append(build_sedmamba_spec(device=device, sar_rarp_profile=sar_rarp_profile, sequence_lengths=sed_sequence_lengths, sequence_note=sed_sequence_note))
+    if want("CoG"):
+        specs.append(build_cog_spec(device=device, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+    if want("CoG-GVR"):
+        specs.append(build_cog_gvr_only_spec(device=device, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+    if want("GVR"):
+        for enc_key, enc_name, feat_dim in (
+            (RESNET50_ENCODER_KEY, RESNET50_ENCODER_NAME, RESNET_FEATURE_DIM),
+            (DINOV2_LARGE_ENCODER_KEY, DINOV2_LARGE_ENCODER_NAME, DINOV2_LARGE_FEATURE_DIM),
+            (CLIP_BASE_ENCODER_KEY, CLIP_BASE_ENCODER_NAME, CLIP_BASE_FEATURE_DIM),
+        ):
+            specs.extend(build_gvr_pred_specs(encoder_key=enc_key, encoder_name=enc_name, feature_dim=feat_dim, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+            specs.extend(build_gvr_kin_specs(encoder_key=enc_key, encoder_name=enc_name, feature_dim=feat_dim, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+            specs.extend(build_gvr_context_specs(encoder_key=enc_key, encoder_name=enc_name, feature_dim=feat_dim, jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+            if enc_key == RESNET50_ENCODER_KEY:
+                specs.append(build_gvr_dual_spec(jigsaws_profile=jigsaws_profile, num_batches=num_batches))
+    if want("SEDMamba"):
+        specs.append(build_sedmamba_spec(device=device, sar_rarp_profile=sar_rarp_profile, sequence_lengths=sed_sequence_lengths, sequence_note=sed_sequence_note))
     return specs
 
 
@@ -1371,6 +1479,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark encoder params, downstream params, FLOPs, and per-window latency for SEDMamba, CoG, and GVR feature models."
     )
+    parser.add_argument("--only", type=str, default=None,
+                        help="Comma-separated model_family values to profile (e.g. 'CoG'). "
+                             "Default: every spec.")
+    parser.add_argument("--latency_stat", choices=["median", "mean"], default="median",
+                        help="Central estimate for latency samples. median (default) is robust to "
+                             "transient stalls on a shared node; mean reproduces the older behaviour.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dummy_batches", type=int, default=DEFAULT_DUMMY_BATCHES)
     parser.add_argument("--warmup_iters", type=int, default=DEFAULT_WARMUP_ITERS)
@@ -1382,6 +1496,7 @@ def main() -> None:
     args = parser.parse_args()
 
     set_seed(42)
+    globals()["LATENCY_STAT"] = args.latency_stat
     device = torch.device(args.device)
     ensure_parent_dir(args.output_csv)
     ensure_parent_dir(args.output_json)
@@ -1408,7 +1523,14 @@ def main() -> None:
         sar_rarp_profile=sar_rarp_profile,
         sed_sequence_lengths=sed_sequence_lengths,
         sed_sequence_note=sed_sequence_note,
+        families=({s.strip().lower() for s in args.only.split(',') if s.strip()} if args.only else None),
     )
+    if args.only:
+        wanted = {s.strip().lower() for s in args.only.split(',') if s.strip()}
+        specs = [s for s in specs if s.model_family.lower() in wanted]
+        print(f"[filter] profiling {len(specs)} spec(s): "
+              + ', '.join(f'{s.model_family}/{s.prompt_type}' for s in specs))
+
 
     print(f"[INFO] Benchmark device: {device}")
     print(f"[INFO] Benchmark window length: {WINDOW_LENGTH}")

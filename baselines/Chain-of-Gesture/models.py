@@ -1612,3 +1612,83 @@ class MultiStageModel1(nn.Module):
         return out
 
 
+
+
+class COG_GVROnly(nn.Module):
+    """
+    Chain-of-Gesture with ONLY the Gestural-Visual Reasoning (GVR) module.
+
+    This is the "CoG (GVR only)" baseline: the GVR transformer (`self.cot`,
+    identical to the one used by `COG`) contextualises per-frame visual features
+    with CLIP-encoded gesture prompts, and a single 1x1 convolution maps the
+    resulting per-frame representation to class logits. The multi-scale temporal
+    reasoning stack of the full CoG model (slow-path MS-TCN + refinement stages,
+    fast-path pooled branch, FPN) is removed.
+
+    `forward` returns `(out_list, f_list)` with exactly one stage each, so the
+    existing CoG training/evaluation loops work unchanged.
+    """
+
+    def __init__(self, args, num_f_dim, num_classes, d_model, d_q, len_q, device,
+                 gest_template='A surgeon is', gest_prompt: str = './utils/gest_prompt_B32.pt',
+                 gesture_prompts=None):
+        super(COG_GVROnly, self).__init__()
+
+        self.dim = num_f_dim
+        self.num_classes = num_classes
+        self.d_model = d_model
+        self.d_q = d_q
+        self.len_q = len_q
+        self.device = device
+        self.gest_prompt = gest_prompt
+
+        num_gest_f = 512
+
+        if gesture_prompts is None:
+            self.gest_list = ['reaching for needle with right hand',
+                              'positioning needle',
+                              'pushing needle through tissue',
+                              'transferring needle from left to right',
+                              'moving to center with needle in grip',
+                              'pulling suture with left hand',
+                              'pulling suture with right hand',
+                              'orienting needle',
+                              'using right hand to help tighten suture',
+                              'loosening more suture',
+                              'dropping suture at end and movign to end points',
+                              'reaching for needle with left hand',
+                              'making C loop around right hand',
+                              'reaching for suture with right hand',
+                              'pulling suture with both hands'
+                              ]
+            prompt_texts = [f'{gest_template} {gesture} ...' for gesture in self.gest_list]
+        else:
+            self.gest_list = list(gesture_prompts)
+            prompt_texts = [
+                prompt if prompt.endswith('...') else f'{prompt} ...'
+                for prompt in self.gest_list
+            ]
+
+        text_model, text_preprocess = clip.load('ViT-B/32', device='cpu')
+        num_gest = len(self.gest_list)
+        self.num_gestures = num_gest
+        self.all_gest_fea = torch.zeros(1, num_gest_f)
+        for prompt_text in prompt_texts:
+            gest_prompt_fea = text_model.encode_text(clip.tokenize(prompt_text)).float()
+            self.all_gest_fea = torch.cat((self.all_gest_fea, gest_prompt_fea), dim=0)
+        self.all_gest_fea = self.all_gest_fea[1:]
+        torch.save(self.all_gest_fea, self.gest_prompt)
+        self.all_action_fea = nn.Parameter(torch.load(self.gest_prompt), requires_grad=False)
+
+        # The GVR module itself (identical to COG's `self.cot`).
+        self.cot = MyTransformer(self.dim, num_gest_f, d_model, d_q, len_q, device)
+        # Minimal classification head on top of the GVR representation.
+        self.conv_out = nn.Conv1d(num_gest * d_model, num_classes, 1)
+
+    def forward(self, x):
+        # x: visual features [1, T, feature_dim]
+        all_action_fea = self.all_action_fea.unsqueeze(0)     # [1, num_gest, 512]
+        xx = self.cot(all_action_fea, x)                      # [1, T, num_gest * d_model]
+        xx = xx.permute(0, 2, 1)                              # [1, num_gest * d_model, T]
+        out = self.conv_out(xx)                               # [1, num_classes, T]
+        return [out], [xx]
