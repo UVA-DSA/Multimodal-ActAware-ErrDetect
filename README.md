@@ -9,7 +9,7 @@
 Official implementation of *Real-Time Multimodal Activity-Aware Error Detection in
 Robot-Assisted Surgery*.
 
-[📄 Paper](https://arxiv.org/abs/2606.23593) · [&#x23FB; IEEE]([https://arxiv.org/abs/2606.23593](https://ieeexplore.ieee.org/abstract/document/11661736)) . [📑 Supplementary Materials](assets/supplementary_materials.pdf)
+[📄 Paper](https://arxiv.org/abs/2606.23593) · [&#x23FB; IEEE](https://ieeexplore.ieee.org/abstract/document/11661736) . [📑 Supplementary Materials](assets/supplementary_materials.pdf)
 
 </div>
 
