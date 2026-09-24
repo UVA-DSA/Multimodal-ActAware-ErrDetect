@@ -9,7 +9,7 @@
 Official implementation of *Real-Time Multimodal Activity-Aware Error Detection in
 Robot-Assisted Surgery*.
 
-[📄 Paper](https://arxiv.org/abs/2606.23593) · [📑 Supplementary Materials](assets/supplementary_materials.pdf)
+[📄 Paper](https://arxiv.org/abs/2606.23593) · [&#x23FB; IEEE]([https://arxiv.org/abs/2606.23593](https://ieeexplore.ieee.org/abstract/document/11661736)) . [📑 Supplementary Materials](assets/supplementary_materials.pdf)
 
 </div>
 
@@ -330,12 +330,16 @@ context-state to triplet mapping those interaction prompts are built from.
 ## Citation
 
 ```bibtex
-@article{multimodal_actaware_errdetect,
-  title   = {Real-Time Multimodal Activity-Aware Error Detection in Robot-Assisted Surgery},
-  journal = {arXiv preprint arXiv:2606.23593},
-  year    = {2026},
-  url     = {https://arxiv.org/abs/2606.23593}
-}
+@ARTICLE{11661736,
+  author={Roodabeh, Seyed Hamid Reza and Li, Zongyu and Alemzadeh, Homa},
+  journal={IEEE Robotics and Automation Letters}, 
+  title={Real-Time Multimodal Activity-Aware Error Detection in Robot-Assisted Surgery}, 
+  year={2026},
+  volume={11},
+  number={10},
+  pages={11881-11888},
+  keywords={Signal detection;Videos;Modeling;Labeling;Context;Visualization;Surgery;Windows;Medical robotics;Needles;Surgical robotics: laparoscopy;deep learning methods;medical robots and systems;computer vision for medical robotics;video-language learning},
+  doi={10.1109/LRA.2026.3726373}}
 ```
 
 ## Acknowledgments
